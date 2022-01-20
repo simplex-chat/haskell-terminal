@@ -4,4 +4,5 @@
 *.hp
 *.prof
 *.svg
-*.cabal
+# *.cabal
+dist-newstyle
