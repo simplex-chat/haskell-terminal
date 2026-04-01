@@ -5,7 +5,7 @@ module System.Terminal.Platform
 
 import           Control.Applicative           ((<|>))
 import           Control.Concurrent            (ThreadId, myThreadId, forkIO)
-import           Control.Concurrent.STM.TMVar
+import           Control.Concurrent.STM.TQueue
 import           Control.Concurrent.STM.TVar   (TVar, newTVarIO, readTVar, readTVarIO, swapTVar, writeTVar)
 import qualified Control.Exception             as E
 import           Control.Monad                 (forM_, when, unless)
@@ -53,7 +53,7 @@ withTerminal action = do
     mainThread     <- liftIO myThreadId
     interrupt      <- liftIO (newTVarIO False)
     windowChanged  <- liftIO (newTVarIO False)
-    events         <- liftIO newEmptyTMVarIO
+    events         <- liftIO newTQueueIO
     withConsoleModes $
         withInputProcessing mainThread interrupt windowChanged events $ action $ LocalTerminal
             { localType = "xterm" -- They claim it behaves like xterm although this is certainly a bit ambituous.
@@ -63,7 +63,7 @@ withTerminal action = do
                 changed <- swapTVar windowChanged False
                 if changed
                     then pure (WindowEvent WindowSizeChanged)
-                    else takeTMVar events
+                    else readTQueue events
             }
 
 decoder0 :: Decoder
@@ -143,7 +143,7 @@ putText text = do
           written <- peek ptrWritten
           when (written < len) (put (BS.drop (fromIntegral len * 2) bs) ptrWritten)
 
-withInputProcessing :: (MonadIO m, MonadMask m) => ThreadId -> TVar Bool -> TVar Bool -> TMVar Event -> m a -> m a
+withInputProcessing :: (MonadIO m, MonadMask m) => ThreadId -> TVar Bool -> TVar Bool -> TQueue Event -> m a -> m a
 withInputProcessing mainThread interrupt windowChanged events ma = do
   terminate  <- liftIO (newTVarIO False)
   terminated <- liftIO (newTVarIO False)
@@ -166,8 +166,7 @@ withInputProcessing mainThread interrupt windowChanged events ma = do
                 shallTerminate <- readTVarIO terminate
                 unless shallTerminate (waitForEvents decoder)
             pushEvent :: Event -> IO ()
-            pushEvent ev = atomically do -- unblock when thread shall terminate
-                putTMVar events ev <|> (readTVar terminate >>= check)
+            pushEvent ev = atomically $ writeTQueue events ev
             waitForEvents :: Decoder -> IO ()
             waitForEvents decoder = tryGetConsoleInputEvent >>= \case
                 -- `tryGetConsoleInputEvent` is a blocking system call. It cannot be interrupted, but

@@ -10,6 +10,7 @@ import           Control.Concurrent
 import qualified Control.Concurrent.Async      as A
 import           Control.Concurrent.STM.TVar
 import           Control.Concurrent.STM.TMVar
+import           Control.Concurrent.STM.TQueue
 import qualified Control.Exception             as E
 import           Control.Monad                 (forM_, void, when)
 import           Control.Monad.Catch hiding    (handle)
@@ -61,7 +62,7 @@ withTerminal action = do
     mainThread     <- liftIO myThreadId
     interrupt      <- liftIO (newTVarIO False)
     windowChanged  <- liftIO (newTVarIO False)
-    events         <- liftIO newEmptyTMVarIO
+    events         <- liftIO newTQueueIO
     cursorPosition <- liftIO newEmptyTMVarIO
     withTermiosSettings $ \termios->
         withInterruptHandler (handleInterrupt mainThread interrupt) $
@@ -73,7 +74,7 @@ withTerminal action = do
                 changed <- swapTVar windowChanged False
                 if changed
                   then pure (WindowEvent WindowSizeChanged)
-                  else takeTMVar events
+                  else readTQueue events
             , localInterrupt = swapTVar interrupt False >>= check >> pure Interrupt
             , localGetCursorPosition = do
                 -- Empty the result variable.
@@ -147,7 +148,7 @@ withInterruptHandler handler = bracket installHandler restoreHandler . const
       pure ()
 
 withInputProcessing :: (MonadIO m, MonadMask m) =>
-    Termios -> TMVar Position -> TMVar Event -> m a -> m a
+    Termios -> TMVar Position -> TQueue Event -> m a -> m a
 withInputProcessing termios cursorPosition events =
     bracket (liftIO $ A.async $ run decoder) (liftIO . A.cancel) . const
     where
@@ -188,8 +189,8 @@ withInputProcessing termios cursorPosition events =
                 -- The second one is not strictly required but a fail safe in order
                 -- to never block in case the terminal sends a report without request.
                 putTMVar cursorPosition pos <|> void (swapTMVar cursorPosition pos)
-                putTMVar events ev
-            ev -> atomically (putTMVar events ev)
+                writeTQueue events ev
+            ev -> atomically (writeTQueue events ev)
 
         -- The timeout duration has been choosen as a tradeoff between correctness
         -- (actual transmission or scheduling delays shall not be misinterpreted) and
